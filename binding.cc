@@ -61,6 +61,11 @@ void FatalErrorCallback2(const char* location, const char* message) {
 }
 */
 
+size_t OnNearHeapLimitCallback(void *data, size_t current_heap_limit, size_t initial_heap_limit) {
+  worker* w = (worker*)data;
+  return nearHeapLimitCb(current_heap_limit, initial_heap_limit, w->table_index);
+}
+
 void ExitOnPromiseRejectCallback(PromiseRejectMessage promise_reject_message) {
   auto isolate = Isolate::GetCurrent();
   worker* w = (worker*)isolate->GetData(0);
@@ -434,6 +439,7 @@ worker* worker_new(int table_index) {
   // w->isolate->SetAbortOnUncaughtExceptionCallback(AbortOnUncaughtExceptionCallback);
   // w->isolate->AddMessageListener(MessageCallback2);
   // w->isolate->SetFatalErrorHandler(FatalErrorCallback2);
+  w->isolate->AddNearHeapLimitCallback(OnNearHeapLimitCallback, (void *) w);
   w->isolate->SetPromiseRejectCallback(ExitOnPromiseRejectCallback);
   w->isolate->SetData(0, w);
   w->table_index = table_index;

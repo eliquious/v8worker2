@@ -50,6 +50,9 @@ var workerTable = make(map[workerTableIndex]*worker)
 // Keeps track of the last used table index. Incremeneted when a worker is created.
 var workerTableNextAvailable workerTableIndex = 0
 
+// Near heap limit callback type.
+type NearHeapLimitCallback func(currentHeapLimit uint, initialHeapLimit uint) uint
+
 // To receive messages from javascript.
 type ReceiveMessageCallback func(msg []byte) []byte
 
@@ -62,9 +65,10 @@ var initV8Once sync.Once
 // Internal worker struct which is stored in the workerTable.
 // Weak-ref pattern https://groups.google.com/forum/#!topic/golang-nuts/1ItNOOj8yW8/discussion
 type worker struct {
-	cWorker    *C.worker
-	cb         ReceiveMessageCallback
-	tableIndex workerTableIndex
+	cWorker         *C.worker
+	nearHeapLimitCb NearHeapLimitCallback
+	recvCb          ReceiveMessageCallback
+	tableIndex      workerTableIndex
 }
 
 // This is a golang wrapper around a single V8 Isolate.
@@ -120,11 +124,21 @@ func workerTableLookup(index workerTableIndex) *worker {
 	return workerTable[index]
 }
 
+//export nearHeapLimitCb
+func nearHeapLimitCb(currentHeapLimit C.size_t, initialHeapLimit C.size_t, index workerTableIndex) C.size_t {
+	w := workerTableLookup(index)
+	if w.nearHeapLimitCb != nil {
+		return C.size_t(w.nearHeapLimitCb(uint(currentHeapLimit), uint(initialHeapLimit)))
+	} else {
+		return 0
+	}
+}
+
 //export recvCb
 func recvCb(buf unsafe.Pointer, buflen C.int, index workerTableIndex) C.buf {
 	gbuf := C.GoBytes(buf, buflen)
 	w := workerTableLookup(index)
-	retbuf := w.cb(gbuf)
+	retbuf := w.recvCb(gbuf)
 	if retbuf != nil {
 		retbufptr := C.CBytes(retbuf) // Note it's up to the caller to free this.
 		return C.buf{retbufptr, C.size_t(len(retbuf))}
@@ -155,8 +169,9 @@ func ResolveModule(moduleSpecifier *C.char, referrerSpecifier *C.char, resolverT
 func New(cb ReceiveMessageCallback) *Worker {
 	workerTableLock.Lock()
 	w := &worker{
-		cb:         cb,
-		tableIndex: workerTableNextAvailable,
+		recvCb:          cb,
+		nearHeapLimitCb: nil,
+		tableIndex:      workerTableNextAvailable,
 	}
 
 	workerTableNextAvailable++
@@ -178,6 +193,11 @@ func New(cb ReceiveMessageCallback) *Worker {
 		final_worker.Dispose()
 	})
 	return externalWorker
+}
+
+// Set near heap limit callback.
+func (w *Worker) SetNearHeapLimitCallback(cb NearHeapLimitCallback) {
+	w.worker.nearHeapLimitCb = cb
 }
 
 // Forcefully frees up memory associated with worker.
